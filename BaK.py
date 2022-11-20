@@ -1,5 +1,6 @@
 #!/bin/python
 
+import functools
 import itertools
 import math
 import pprint
@@ -1283,23 +1284,102 @@ def ShowModelTk(model):
     tk.bind("q", lambda e: tk.quit())
     tk.mainloop()
 
+def ShowWorldPlt(world_space, color, pos, rot):
+    view_matrix = MxM(T(pos), R(rot))
+    camera_space = [ MxV(view_matrix, p) for p in world_space ]
+
+    projection_matrix = perspective(45, 320/200, 1000, 50000)
+
+    near = projection_matrix[2*4+3] / (projection_matrix[2*4+2] - 1.0)
+    far = projection_matrix[2*4+3] / (projection_matrix[2*4+2] + 1.0)
+
+    nearBottom = near * (projection_matrix[2*4+1] - 1) / projection_matrix[1*4+1]
+    nearTop = near * (projection_matrix[2*4+1] + 1) / projection_matrix[1*4+1]
+    nearLeft = near * (projection_matrix[2*4+0] - 1) / projection_matrix[0*4+0]
+    nearRight = near * (projection_matrix[2*4+0] + 1) / projection_matrix[0*4+0]
+
+    farBottom = far * (projection_matrix[2*4+1] - 1) / projection_matrix[1*4+1]
+    farTop = far * (projection_matrix[2*4+1] + 1) / projection_matrix[1*4+1]
+    farLeft = far * (projection_matrix[2*4+0] - 1) / projection_matrix[0*4+0]
+    farRight = far * (projection_matrix[2*4+0] + 1) / projection_matrix[0*4+0]
+
+    x, y, z, c = list(zip(*[(x, y, z, c) for (x, y, z, w), c in zip(camera_space, color) if farLeft < x < farRight and farBottom < y < farTop and near < z < far]))
+
+    ax = plt.figure().add_subplot(111, projection="3d")
+    ax.scatter(x, y, z, zdir='y', c=c)
+
+    fust = [ (nearLeft, nearTop, near)
+           , (nearRight, nearTop, near)
+           , (nearRight, nearBottom, near)
+           , (nearLeft, nearBottom, near)
+           , (nearLeft, nearTop, near) ]
+    x, z, y = list(zip(*fust))
+    plt.plot(x, y, z, c="#FF0000")
+
+    fust = [ (farLeft, farTop, far)
+           , (farRight, farTop, far)
+           , (farRight, farBottom, far)
+           , (farLeft, farBottom, far)
+           , (farLeft, farTop, far) ]
+    x, z, y = list(zip(*fust))
+    plt.plot(x, y, z, c="#FF0000")
+
+    fust = [ (nearLeft, nearTop, near)
+           , (nearRight, nearTop, near)
+           , (farRight, farTop, far)
+           , (farLeft, farTop, far)
+           , (nearLeft, nearTop, near) ]
+    x, z, y = list(zip(*fust))
+    plt.plot(x, y, z, c="#FF0000")
+
+    fust = [ (nearLeft, nearBottom, near)
+           , (nearRight, nearBottom, near)
+           , (farRight, farBottom, far)
+           , (farLeft, farBottom, far)
+           , (nearLeft, nearBottom, near) ]
+    x, z, y = list(zip(*fust))
+    plt.plot(x, y, z, c="#FF0000")
+
+    plt.gca().set_aspect('equal', adjustable='box')
+    plt.show()
+
+# Rotate left: 0b1001 --> 0b0011
+rol = lambda val, r_bits, max_bits: \
+    (val << r_bits%max_bits) & (2**max_bits-1) | \
+    ((val & (2**max_bits-1)) >> (max_bits-(r_bits%max_bits)))
+
+# Rotate right: 0b1001 --> 0b1100
+ror = lambda val, r_bits, max_bits: \
+    ((val & (2**max_bits-1)) >> r_bits%max_bits) | \
+    (val << (max_bits-(r_bits%max_bits)) & (2**max_bits-1))
+
 if __name__ == "__main__":
     offsets = []
     with open("krondor.rmf", "rb") as rmf:
-        data = rmf.read(4 + 2 + 13 + 2)
-        _, _, filename, count = struct.unpack("<IH13sH", data)
-        for _ in range(count):
-            data = rmf.read(8)
-            _, offset = struct.unpack("<II", data)
-            offsets.append(offset)
+        data = rmf.read(2 + 2 + 2)
+        packed_count, hash_seed, hash_shift = struct.unpack("<HHH", data)
+        for _ in range(packed_count):
+            data = rmf.read(13 + 2)
+            filename, count = struct.unpack("<13sH", data)
+            for _ in range(count):
+                data = rmf.read(8)
+                hash, offset = struct.unpack("<II", data)
+                offsets.append((hash, offset))
 
+    # Only one file for now
     resources = {}
     with open(filename.rstrip(b'\x00'), "rb") as r:
-        for offset in (offsets):
+        for hash, offset in (offsets):
             r.seek(offset)
             data = r.read(13 + 4)
             name, size = struct.unpack("<13sI", data)
-            resources[name.rstrip(b'\x00').decode()] = r.read(size)
+            name = name.rstrip(b'\x00').decode()
+            resources[name] = r.read(size)
+            # calc = [ord(c) for c in name.upper()]
+            # calc[0] += hash_seed
+            # calc = functools.reduce(lambda a, b: rol(a, hash_shift, 32) + b, calc)
+            # calc = rol(calc, hash_shift, 32)
+            # print("{} {:08X} {:08X}".format(name, hash, calc))
 
     with open("startup.gam", 'rb') as gam:
         resources["startup.gam"] = gam.read()
