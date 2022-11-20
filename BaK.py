@@ -633,7 +633,7 @@ def LoadTBL(TBL):
                 offsets.append( (high << 4) + (low & 0xF) )
             for i, offset in enumerate(offsets):
                 index = offset
-                items[i]["DAT"] = dict(zip(["flags", "type", "terrain", "class"], struct.unpack("<BBBB", v[index:index+4])))
+                items[i]["DAT"] = dict(zip(["flags", "type", "terrain", "scale"], struct.unpack("<BBBB", v[index:index+4])))
                 index = index + 4
                 items[i]["DAT"]["unknown"] = struct.unpack("<2B", v[index:index+2])
                 index = index + 2
@@ -688,7 +688,7 @@ def LoadTBL(TBL):
                             vertices[k] = sub
                     items[i]["DAT"]["vertices"] = vertices
 
-                    if items[i]["DAT"]["terrain"] != 0 and items[i]["DAT"]["class"] == 0: # FIELD
+                    if items[i]["DAT"]["terrain"] != 0 and items[i]["DAT"]["scale"] == 0: # FIELD
                         items[i]["pos"] = vertices[rows[0]["index"]][0]
 
                     for face in rows:
@@ -1411,109 +1411,63 @@ if __name__ == "__main__":
     # DEBUG - Everything below here is temporary for debugging
 
     if False:
-        model = [ t for t in table if "corn" == t["MAP"] ][0]
-        ShowModelPlt(model)
+        model = [ t for t in table if "landscp1" == t["MAP"] ][0]
+        #ShowModelPlt(t)
+        ShowModelTk(model)
+
+    def colorize( map ):
+        if "fire" in map:
+            return "#F0C0C0"
+        elif "tree" in map:
+            return "#aef359"
+        elif "body" in map:
+            return "#6A0DAD"
+        elif "tstone" in map:
+            return "#6A0DAD"
+        elif "house" in map:
+            return "#D2B48C"
+        elif "fence" in map:
+            return "#D2B48C"
+        elif "field" in map:
+            return "#D2B48C"
+        elif "corn" in map:
+            return "#ffff00"
+        elif "ground" in map:
+            return "#000000"
+        elif "sign" in map:
+            return "#CCCCCC"
+        elif "land" in map:
+            return "#CCCCCC"
+        elif "dirt" in map:
+            return "#FF0000"
+        elif "inn" in map:
+            return "#FF0000"
+        elif "box" in map:
+            return "#FF0000"
+        elif "chest" in map:
+            return "#FF0000"
+        elif "smth" in map:
+            return "#FF0000"
+        else:
+            return "#0000FF"
 
     if False:
-        world_space = [ ((t["xloc"], 0, t["yloc"], 1), table[t["type"]]) for t in tiles ]
-        view_matrix = MxM(T( (669600, -1000, 1064800) ), R( (0, 180, 0) ))
-        camera_space = [ (MxV(view_matrix, p), t) for (p, t) in world_space ]
-
-        x, z, tile = list(zip(*[(x, z, t) for (x, y, z, w), t in camera_space]))
+        world = [ (t["xloc"], 0, t["yloc"], 1) for t in tiles ]
         c = []
-        for t in tile:
-            if "fire" in t["MAP"]:
-                c.append( "#F0C0C0" )
-            elif "tree" in t["MAP"]:
-                c.append( "#aef359" )
-            elif "body" in t["MAP"]:
-                c.append( "#6A0DAD" )
-            elif "tstone" in t["MAP"]:
-                c.append( "#6A0DAD" )
-            elif "house" in t["MAP"]:
-                c.append( "#D2B48C" )
-            elif "fence" in t["MAP"]:
-                c.append( "#D2B48C" )
-            elif "field" in t["MAP"]:
-                c.append( "#D2B48C" )
-            elif "corn" in t["MAP"]:
-                c.append( "#ffff00" )
-            elif "ground" in t["MAP"]:
-                c.append( "#000000" )
-            elif "sign" in t["MAP"]:
-                c.append( "#CCCCCC" )
-            elif "land" in t["MAP"]:
-                c.append( "#CCCCCC" )
-            elif "dirt" in t["MAP"]:
-                c.append( "#FF0000" )
-            elif "inn" in t["MAP"]:
-                c.append( "#FF0000" )
-            elif "box" in t["MAP"]:
-                c.append( "#FF0000" )
-            elif "chest" in t["MAP"]:
-                c.append( "#FF0000" )
-            elif "smth" in t["MAP"]:
-                c.append( "#FF0000" )
-            else:
-                c.append( "#0000FF" )
-        plt.scatter(x, z, c=c)
-
-        projection_matrix = perspective(45, 320/200, 1000, 50000)
-
-        near = projection_matrix[2*4+3] / (projection_matrix[2*4+2] - 1.0)
-        far = projection_matrix[2*4+3] / (projection_matrix[2*4+2] + 1.0)
-
-        nearBottom = near * (projection_matrix[2*4+1] - 1) / projection_matrix[1*4+1]
-        nearTop = near * (projection_matrix[2*4+1] + 1) / projection_matrix[1*4+1]
-        nearLeft = near * (projection_matrix[2*4+0] - 1) / projection_matrix[0*4+0]
-        nearRight = near * (projection_matrix[2*4+0] + 1) / projection_matrix[0*4+0]
-
-        farBottom = far * (projection_matrix[2*4+1] - 1) / projection_matrix[1*4+1]
-        farTop = far * (projection_matrix[2*4+1] + 1) / projection_matrix[1*4+1]
-        farLeft = far * (projection_matrix[2*4+0] - 1) / projection_matrix[0*4+0]
-        farRight = far * (projection_matrix[2*4+0] + 1) / projection_matrix[0*4+0]
-
-        fust = [ (nearLeft, near), (nearRight, near), (farRight, far), (farLeft, far), (nearLeft, near) ]
-        x, z = list(zip(*fust))
-        plt.plot(x, z, c="#FF0000")
-
-        plt.gca().set_aspect('equal', adjustable='box')
-        plt.show()
+        for t in tiles:
+            c.append( colorize( table[t["type"]]["MAP"] ) )
+        ShowWorldPlt(world, c, (669600, -1000, 1064800), (0, 180, 0))
 
     if False:
-        # Rasterizer
         world_space = []
+        c = []
         for t in tiles:
             if "vertices" in table[t["type"]]["DAT"]:
                 model_space = triangulation(table[t["type"]])
                 model_matrix = MxM(T( (t["xloc"], 0, t["yloc"], 1) ), R( (0, 0, 0) ))
-                world_space += [ ([ MxV(model_matrix, (*p, 1)) for p in poly ], text) for (poly, text) in model_space ]
+                model_matrix = MxM(model_matrix, S( (table[t["type"]]["DAT"]["scale"], table[t["type"]]["DAT"]["scale"], table[t["type"]]["DAT"]["scale"]) ))
+                world_space.extend( [ MxV(model_matrix, (*p, 1)) for (poly, text) in model_space for p in poly ] )
+            c.extend( [ colorize( table[t["type"]]["MAP"] ) ] * ( len( world_space ) - len( c ) ) )
 
-        view_matrix = MxM(T( (669600, -1000, 1064800) ), R( (0, 180, 0) ))
-        camera_space = [ [ MxV(view_matrix, p) for p in poly ] for (poly, text) in world_space ]
-
-        x, z = list(zip(*[(x, z) for poly in camera_space for (x, y, z, w) in poly ]))
-        plt.scatter(x, z)
-
-        projection_matrix = perspective(45, 320/200, 1000, 50000)
-
-        near = projection_matrix[2*4+3] / (projection_matrix[2*4+2] - 1.0)
-        far = projection_matrix[2*4+3] / (projection_matrix[2*4+2] + 1.0)
-
-        nearBottom = near * (projection_matrix[2*4+1] - 1) / projection_matrix[1*4+1]
-        nearTop = near * (projection_matrix[2*4+1] + 1) / projection_matrix[1*4+1]
-        nearLeft = near * (projection_matrix[2*4+0] - 1) / projection_matrix[0*4+0]
-        nearRight = near * (projection_matrix[2*4+0] + 1) / projection_matrix[0*4+0]
-
-        farBottom = far * (projection_matrix[2*4+1] - 1) / projection_matrix[1*4+1]
-        farTop = far * (projection_matrix[2*4+1] + 1) / projection_matrix[1*4+1]
-        farLeft = far * (projection_matrix[2*4+0] - 1) / projection_matrix[0*4+0]
-        farRight = far * (projection_matrix[2*4+0] + 1) / projection_matrix[0*4+0]
-
-        fust = [ (nearLeft, near), (nearRight, near), (farRight, far), (farLeft, far), (nearLeft, near) ]
-        x, z = list(zip(*fust))
-        plt.plot(x, z, c="#FF0000")
-
-        plt.gca().set_aspect('equal', adjustable='box')
-        plt.show()
+        ShowWorldPlt(world_space, c, (669600, -1000, 1064800), (0, 180, 0))
 
