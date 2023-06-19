@@ -662,18 +662,18 @@ def LoadTBL(TBL):
                     header["unknown2"] = struct.unpack("<4B", v[index:index+4])
                     index = index + 4
 
-                    rows = [ {"row":struct.unpack("<12B", v[index:index+12])} ]
+                    rows = [ {"raw":struct.unpack("<12B", v[index:index+12])} ]
                     index = index + 12
 
-                    row_index = struct.unpack("<H",bytes(rows[-1]["row"][2:4]))[0]
-                    vertices_count = {row_index:rows[-1]["row"][1]}
+                    row_index = struct.unpack("<H",bytes(rows[-1]["raw"][2:4]))[0]
+                    vertices_count = {row_index:rows[-1]["raw"][1]}
                     rows[-1]["index"] = row_index
                     for _ in range(header["count"] - 1):
-                        rows.append( {"row":struct.unpack("<14B", v[index:index+14])} )
+                        rows.append( {"raw":struct.unpack("<14B", v[index:index+14])} )
                         index = index + 14
-                        if struct.unpack("<H",bytes(rows[-1]["row"][4:6]))[0] != row_index:
-                            row_index = struct.unpack("<H",bytes(rows[-1]["row"][4:6]))[0]
-                            vertices_count[row_index] = rows[-1]["row"][3]
+                        if struct.unpack("<H",bytes(rows[-1]["raw"][4:6]))[0] != row_index:
+                            row_index = struct.unpack("<H",bytes(rows[-1]["raw"][4:6]))[0]
+                            vertices_count[row_index] = rows[-1]["raw"][3]
                         rows[-1]["index"] = row_index
 
                     items[i]["DAT"]["faces"] = {"header":header, "rows":rows}
@@ -732,8 +732,8 @@ def LoadWLD(WLD):
     index = 0
     world = []
     while index < len(WLD):
-        world.append( dict(zip(["type", "flags", "xloc", "yloc", "unknown"]
-            , struct.unpack("<IIIII", WLD[index:index+20]))) )
+        world.append( dict(zip(["type", "xrot", "yrot", "zrot", "xloc", "yloc", "zloc"]
+            , struct.unpack("<HHHHIII", WLD[index:index+20]))) )
         index = index + 20
 
     return world
@@ -1119,7 +1119,7 @@ def triangulation(model):
                             model_space.append( ([v[i] for i in [0, w, w+1]], text) )
                     elif len(poly) == 2:
                         # give lines some volume
-                        model_space.append( ([ v[0], v[1]  , tuple([C+1 for C in v[1]]) ], text) )
+                        model_space.append( ([ v[0], v[1], tuple([C+1 for C in v[1]]) ], text) )
                         model_space.append( ([ v[0], tuple([B+1 for B in v[1]]), tuple([C+1 for C in v[0]]) ], text) )
                     else:
                         print("poly", len(poly), poly)
@@ -1139,7 +1139,7 @@ def raster(model_space, xpos, ypos, zpos, xrot, yrot):
 def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
     backbuffer = PIL.Image.new("RGBA", (320, 200), (0x40, 0x40, 0x40))
 
-    #depth = {}
+    depth = {}
     stpool = itertools.cycle([ [(1,0), (0,0), (0,1)], [(1,0), (0,1), (1,1)] ])
     model_space = sorted(model_space, key=lambda model: sum([-p[2] for p in model[0]]) / 3)
     for poly, texture in model_space:
@@ -1164,8 +1164,8 @@ def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
                 if all(wn >= 0 for wn in w):
                     w = [wn / area for wn in w]
                     z = 1 / sum([Vn[2] * wn for Vn, wn in zip(V, w)])
-                    if True: #p not in depth or z < depth[p]:
-                        #depth[p] = z
+                    if p not in depth or z < depth[p]:
+                        depth[p] = z
                         if not texture[0] & 0x70:
                             # The texture seems to be a progression for the whole screen
                             # E.g. A landscape will be light green on top and the
@@ -1284,7 +1284,7 @@ def ShowModelTk(model):
     tk.bind("q", lambda e: tk.quit())
     tk.mainloop()
 
-def ShowWorldPlt(world_space, color, pos, rot):
+def ShowWorldPlt(world_space, color, label, pos, rot):
     view_matrix = MxM(T(pos), R(rot))
     camera_space = [ MxV(view_matrix, p) for p in world_space ]
 
@@ -1303,10 +1303,13 @@ def ShowWorldPlt(world_space, color, pos, rot):
     farLeft = far * (projection_matrix[2*4+0] - 1) / projection_matrix[0*4+0]
     farRight = far * (projection_matrix[2*4+0] + 1) / projection_matrix[0*4+0]
 
-    x, y, z, c = list(zip(*[(x, y, z, c) for (x, y, z, w), c in zip(camera_space, color) if farLeft < x < farRight and farBottom < y < farTop and near < z < far]))
+    label = label if label else [ None ] * len( color )
+    x, y, z, c, l = list(zip(*[(x, y, z, c, l) for (x, y, z, w), c, l in zip(camera_space, color, label) if farLeft < x < farRight and farBottom < y < farTop and near < z < far]))
 
     ax = plt.figure().add_subplot(111, projection="3d")
     ax.scatter(x, y, z, zdir='y', c=c)
+    for i, txt in enumerate( l ):
+        ax.text( x[i], z[i], y[i], txt )
 
     fust = [ (nearLeft, nearTop, near)
            , (nearRight, nearTop, near)
@@ -1407,12 +1410,16 @@ if __name__ == "__main__":
             if name in resources:
                 tiles += LoadWLD(resources[name])
     table = LoadTBL(resources["Z"+zone+".TBL"])
+    #print([ (k, list(map("{:02X}".format,v))) for k, v in LoadTags(resources["Z"+zone+".TBL"]).items() ])
 
     # DEBUG - Everything below here is temporary for debugging
 
     if False:
-        model = [ t for t in table if "landscp1" == t["MAP"] ][0]
-        #ShowModelPlt(t)
+        # landscp4 is the one at the starting area
+        # BUT it's reversed
+        model = next( ( t for t in table if "landscp4" == t["MAP"] ) )
+        tile = next( ( t for t in tiles if t["xloc"] == 671367 ) )
+        #ShowModelPlt(model)
         ShowModelTk(model)
 
     def colorize( map ):
@@ -1454,9 +1461,11 @@ if __name__ == "__main__":
     if False:
         world = [ (t["xloc"], 0, t["yloc"], 1) for t in tiles ]
         c = []
+        l = []
         for t in tiles:
             c.append( colorize( table[t["type"]]["MAP"] ) )
-        ShowWorldPlt(world, c, (669600, -1000, 1064800), (0, 180, 0))
+            l.append( str(table[t["type"]]["MAP"]) + str(t["xloc"]) + str(t["yloc"]) )
+        ShowWorldPlt(world, c, l, (669600, -1000, 1064800), (0, 180, 0))
 
     if False:
         world_space = []
@@ -1464,10 +1473,10 @@ if __name__ == "__main__":
         for t in tiles:
             if "vertices" in table[t["type"]]["DAT"]:
                 model_space = triangulation(table[t["type"]])
-                model_matrix = MxM(T( (t["xloc"], 0, t["yloc"], 1) ), R( (0, 0, 0) ))
+                model_matrix = MxM(T( (t["xloc"], t["zloc"], t["yloc"], 1) ), R( (t["xrot"], t["zrot"], t["yrot"]) ))
                 model_matrix = MxM(model_matrix, S( (table[t["type"]]["DAT"]["scale"], table[t["type"]]["DAT"]["scale"], table[t["type"]]["DAT"]["scale"]) ))
                 world_space.extend( [ MxV(model_matrix, (*p, 1)) for (poly, text) in model_space for p in poly ] )
             c.extend( [ colorize( table[t["type"]]["MAP"] ) ] * ( len( world_space ) - len( c ) ) )
 
-        ShowWorldPlt(world_space, c, (669600, -1000, 1064800), (0, 180, 0))
+        ShowWorldPlt(world_space, c, [], (669600, -1000, 1064800), (0, 180, 0))
 
