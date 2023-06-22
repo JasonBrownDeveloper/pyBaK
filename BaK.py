@@ -120,6 +120,7 @@ def Dynamix_RLE(length, compressed):
 
     return buf_out
 
+#TODO change index to BufferedReader
 def LoadTags(raw):
     index = 0
     tags = {}
@@ -1112,8 +1113,11 @@ def triangulation(model):
         for f in model["DAT"]["faces"]["rows"]:
             if "polygons" in f:
                 for poly, text, sub in zip(f["polygons"], f["textures"], f["subA"]):
-                    v = [model["DAT"]["vertices"][f["index"]][p] for p in poly]
-                    v = [(x, z, y) for x, y, z in v] # convert model from y, z to z, y
+                    v = [ model["DAT"]["vertices"][f["index"]][p] for p in poly ]
+                    # convert model from z up to y up
+                    v = [ MxV(R( (-90, 0, 0) ), (*p, 1))[0:3] for p in v]
+                    # convert model from clockwise to counter-clockwise
+                    v.reverse()
                     if len(poly) >= 3:
                         for w in range(1, len(poly)-1):
                             model_space.append( ([v[i] for i in [0, w, w+1]], text) )
@@ -1141,7 +1145,6 @@ def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
 
     depth = {}
     stpool = itertools.cycle([ [(1,0), (0,0), (0,1)], [(1,0), (0,1), (1,1)] ])
-    model_space = sorted(model_space, key=lambda model: sum([-p[2] for p in model[0]]) / 3)
     for poly, texture in model_space:
         V = raster(poly, xpos, ypos, zpos, xrot, yrot)
         if texture[0] & 0x10:
@@ -1414,9 +1417,8 @@ if __name__ == "__main__":
 
     # DEBUG - Everything below here is temporary for debugging
 
-    if False:
+    if True:
         # landscp4 is the one at the starting area
-        # BUT it's reversed
         model = next( ( t for t in table if "landscp4" == t["MAP"] ) )
         tile = next( ( t for t in tiles if t["xloc"] == 671367 ) )
         #ShowModelPlt(model)
