@@ -660,22 +660,16 @@ def LoadTBL(TBL):
                     index = index + 2
                     header["count"] = struct.unpack("<H", v[index:index+2])[0]
                     index = index + 2
-                    header["unknown2"] = struct.unpack("<4B", v[index:index+4])
-                    index = index + 4
+                    header["unknown2"] = struct.unpack("<2B", v[index:index+2])
+                    index = index + 2
 
-                    rows = [ {"raw":struct.unpack("<12B", v[index:index+12])} ]
-                    index = index + 12
-
-                    row_index = struct.unpack("<H",bytes(rows[-1]["raw"][2:4]))[0]
-                    vertices_count = {row_index:rows[-1]["raw"][1]}
-                    rows[-1]["index"] = row_index
-                    for _ in range(header["count"] - 1):
+                    rows = []
+                    vertices_count = {}
+                    for _ in range(header["count"]):
                         rows.append( {"raw":struct.unpack("<14B", v[index:index+14])} )
                         index = index + 14
-                        if struct.unpack("<H",bytes(rows[-1]["raw"][4:6]))[0] != row_index:
-                            row_index = struct.unpack("<H",bytes(rows[-1]["raw"][4:6]))[0]
-                            vertices_count[row_index] = rows[-1]["raw"][3]
-                        rows[-1]["index"] = row_index
+                        rows[-1]["index"] = struct.unpack("<H",bytes(rows[-1]["raw"][4:6]))[0]
+                        vertices_count[rows[-1]["index"]] = rows[-1]["raw"][3]
 
                     items[i]["DAT"]["faces"] = {"header":header, "rows":rows}
 
@@ -708,10 +702,10 @@ def LoadTBL(TBL):
                                 index = index + 8
                             face["subA"] = subA
 
-                            textures = []
+                            colors = []
                             for s in subA:
-                                textures.append( s[0:2] )
-                            face["textures"] = textures
+                                colors.append( s[1] )
+                            face["colors"] = colors
 
                             polygons = []
                             for _ in range(subheader["count"]):
@@ -1112,7 +1106,7 @@ def triangulation(model):
     if model["DAT"]["vertices"]:
         for f in model["DAT"]["faces"]["rows"]:
             if "polygons" in f:
-                for poly, text, sub in zip(f["polygons"], f["textures"], f["subA"]):
+                for poly, c in list( zip(f["polygons"], f['colors'] ) ):
                     v = [ model["DAT"]["vertices"][f["index"]][p] for p in poly ]
                     # convert model from z up to y up
                     v = [ MxV(R( (-90, 0, 0) ), (*p, 1))[0:3] for p in v]
@@ -1120,11 +1114,11 @@ def triangulation(model):
                     v.reverse()
                     if len(poly) >= 3:
                         for w in range(1, len(poly)-1):
-                            model_space.append( ([v[i] for i in [0, w, w+1]], text) )
+                            model_space.append( ([v[i] for i in [0, w, w+1]], c) )
                     elif len(poly) == 2:
                         # give lines some volume
-                        model_space.append( ([ v[0], v[1], tuple([C+1 for C in v[1]]) ], text) )
-                        model_space.append( ([ v[0], tuple([B+1 for B in v[1]]), tuple([C+1 for C in v[0]]) ], text) )
+                        model_space.append( ([ v[0], v[1], tuple([C+1 for C in v[1]]) ], c) )
+                        model_space.append( ([ v[0], tuple([B+1 for B in v[1]]), tuple([C+1 for C in v[0]]) ], c) )
                     else:
                         print("poly", len(poly), poly)
     return model_space
@@ -1145,19 +1139,11 @@ def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
 
     depth = {}
     stpool = itertools.cycle([ [(1,0), (0,0), (0,1)], [(1,0), (0,1), (1,1)] ])
-    for poly, texture in model_space:
+    for poly, c in model_space:
         V = raster(poly, xpos, ypos, zpos, xrot, yrot)
-        if texture[0] & 0x10:
-            st = next(stpool)
-        else:
-            c = [[1,0,0], [0,1,0], [0,0,1]]
         if len(V) == 3:
             area = EdgeFunction(*V)
             V = [(Vn[0], Vn[1], 1/Vn[2]) for Vn in V]
-            if texture[0] & 0x10:
-                st = [(stn[0]/Vn[2], stn[1]/Vn[2]) for stn, Vn in zip(st, V)]
-            else:
-                c = [(cn[0]/Vn[2], cn[1]/Vn[2], cn[2]/Vn[2]) for cn, Vn in zip(c, V)]
             bbox = ( min([int(p[0]) for p in V])
                    , min([int(p[1]) for p in V])
                    , max([int(p[0]) for p in V])
@@ -1169,39 +1155,9 @@ def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
                     z = 1 / sum([Vn[2] * wn for Vn, wn in zip(V, w)])
                     if p not in depth or z < depth[p]:
                         depth[p] = z
-                        if not texture[0] & 0x70:
-                            # The texture seems to be a progression for the whole screen
-                            # E.g. A landscape will be light green on top and the
-                            # texture transitions smoothly to the ground infront of the
-                            # camera
-                            # texture
-                            #   0 -  69 70 green 
-                            #  70 -  89 20 brown
-                            #  90 - 109 20 water vert
-                            # 110 - 141 30 hunter green
-                            # 142 - 161 20 dirt
-                            # 162 - 188 20 water horiz
-                            # 189 - 194  5 yellow
-                            # 195 - 199  5 tan
-                            r = int(sum([wn*cn[0] for wn, cn in zip(w, c)]) * z * 255)
-                            backbuffer.putpixel( p, (r,0,0) )
-                        elif texture[0] & 0x10:
-                            bmx = sprites[texture[1]]
-                            s = int(sum([wn*stn[0] for wn, stn in zip(w, st)]) * z * bmx["width"])
-                            t = int(sum([wn*stn[1] for wn, stn in zip(w, st)]) * z * bmx["height"])
-                            color_offset = bmx["image"].getpixel( (s, t) )[0] * 3
-                            color = palette["PAL"]["VGA"][color_offset:color_offset+3]
-                            backbuffer.putpixel( p, tuple(color) )
-                        elif texture[0] & 0x20:
-                            g = int(sum([wn*cn[1] for wn, cn in zip(w, c)]) * z * 255)
-                            backbuffer.putpixel( p, (0,g,0) )
-                        elif texture[0] & 0x40:
-                            # shift palette group?
-                            # paths seem to have the same texture as ground
-                            b = int(sum([wn*cn[2] for wn, cn in zip(w, c)]) * z * 255)
-                            backbuffer.putpixel( p, (0,0,b) )
-                        else:
-                            print(texture[0])
+                        color_offset = c * 3
+                        color = palette["PAL"]["VGA"][color_offset:color_offset+3]
+                        backbuffer.putpixel( p, tuple( color ) )
     surface.paste(backbuffer.convert("RGB").resize((surface.width(), surface.height())))
 
 def ShowModelTk(model):
@@ -1413,14 +1369,12 @@ if __name__ == "__main__":
             if name in resources:
                 tiles += LoadWLD(resources[name])
     table = LoadTBL(resources["Z"+zone+".TBL"])
-    #print([ (k, list(map("{:02X}".format,v))) for k, v in LoadTags(resources["Z"+zone+".TBL"]).items() ])
 
     # DEBUG - Everything below here is temporary for debugging
 
     if True:
-        # landscp4 is the one at the starting area
-        model = next( ( t for t in table if "landscp4" == t["MAP"] ) )
-        tile = next( ( t for t in tiles if t["xloc"] == 671367 ) )
+        # TODO z fighting on buildings
+        model = next( ( t for t in table if "house" == t["MAP"] ) )
         #ShowModelPlt(model)
         ShowModelTk(model)
 
