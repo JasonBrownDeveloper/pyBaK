@@ -6,8 +6,10 @@ import math
 import pprint
 import struct
 import sys
-import tkinter
 import time
+import tkinter
+import tkinter.font
+import tkinter.ttk
 
 import PIL.Image
 import PIL.ImageTk
@@ -627,94 +629,172 @@ def LoadTBL(TBL):
 
         elif k == "DAT":
             index = 0
+
             offsets = []
-            for _ in range(len(items)):
-                low, high = struct.unpack("<HH", v[index:index+4])
-                index = index + 4
-                offsets.append( (high << 4) + (low & 0xF) )
+            while True:
+                low, high = struct.unpack_from("<HH", v, index)
+                index += 4
+                offset = (high << 4) + (low & 0xF)
+                if not offset:
+                    break
+                offsets.append( offset )
+
             for i, offset in enumerate(offsets):
-                index = offset
-                items[i]["DAT"] = dict(zip(["flags", "type", "terrain", "scale"], struct.unpack("<BBBB", v[index:index+4])))
-                index = index + 4
-                items[i]["DAT"]["unknown"] = struct.unpack("<2B", v[index:index+2])
-                index = index + 2
+                #length = sorted([n for n in offsets + [len(v)] if n > offset])[0]
+                #items[i]["DAT"]["raw"] = list(map("{:02X}".format,v[offset:length]))
+                #print( items[i]["MAP"] )
 
-                length = sorted([n for n in offsets + [len(v)] if n > offset])[0]
-                items[i]["DAT"]["raw"] = list(map("{:02X}".format,v[offset:length]))
+                items[i]["DAT"] = dict(zip(
+                      ["flags", "type", "terrain", "scale"]
+                    , struct.unpack_from("<BBBB", v, offset + 0)))
 
-                header = {"unknown":struct.unpack("<2B", v[index:index+2])}
-                index = index + 2
-                header["count"] = struct.unpack("<H", v[index:index+2])[0]
-                index = index + 2
-                header["unknown2"] = struct.unpack("<4B", v[index:index+4])
-                index = index + 4
+                items[i]["DAT"] |= dict(zip(
+                      ["animation count", "animation offset"]
+                    , struct.unpack_from("<HH", v, offset + 4)))
 
-                items[i]["DAT"]["bounds"] = {"header":header}
-                if header["count"] > 0:
-                    if not items[i]["DAT"]["flags"] & 0x20: # UNBOUNDED
-                        minx, miny, minz, maxx, maxy, maxz = struct.unpack("<hhhhhh", v[index:index+12])
-                        index = index + 12
-                        items[i]["DAT"]["bounds"].update({"min":(minx, miny, minz), "max":(maxx, maxy, maxz)})
+                # All offsets are themselves offset from the base offset
+                items[i]["DAT"] |= dict(zip(
+                      ["model count", "base offset", "u1", "u2"]
+                    , struct.unpack_from("<HH2B", v, offset + 8)))
 
-                    header = {"unknown":struct.unpack("<2B", v[index:index+2])}
-                    index = index + 2
-                    header["count"] = struct.unpack("<H", v[index:index+2])[0]
-                    index = index + 2
-                    header["unknown2"] = struct.unpack("<2B", v[index:index+2])
-                    index = index + 2
+                if not items[i]["DAT"]["flags"] & 0x20: # UNBOUNDED
+                    minx, miny, minz, maxx, maxy, maxz = struct.unpack_from(
+                          "<hhhhhh"
+                        , v
+                        , offset + 14 )
+                    items[i]["DAT"] |= {
+                          "min":(minx, miny, minz)
+                        , "max":(maxx, maxy, maxz) }
 
-                    rows = []
-                    vertices_count = {}
-                    for _ in range(header["count"]):
-                        rows.append( {"raw":struct.unpack("<14B", v[index:index+14])} )
-                        index = index + 14
-                        rows[-1]["index"] = struct.unpack("<H",bytes(rows[-1]["raw"][4:6]))[0]
-                        vertices_count[rows[-1]["index"]] = rows[-1]["raw"][3]
+                for j in range( items[i]["DAT"]["model count"] ):
+                    items[i]["DAT"].setdefault("model", []).append( dict(zip(
+                          ["u1", "u2", "mesh count", "mesh offset"]
+                        , struct.unpack_from(
+                              "<2BHH"
+                            , v
+                            , offset + 14
+                                + ( 12 if not items[i]["DAT"]["flags"] & 0x20 else 0 )
+                                + ( j * 6 ) ))) )
 
-                    items[i]["DAT"]["faces"] = {"header":header, "rows":rows}
+                # all offsets are from the start of the model table
+                offset += 14 + ( 12 if not items[i]["DAT"]["flags"] & 0x20 else 0 )
 
-                    vertices = {}
-                    for k, c in vertices_count.items():
-                        sub = []
-                        for _ in range(c):
-                            sub.append( struct.unpack("<hhh", v[index:index+6]) )
-                            index = index + 6
-                        if sub:
-                            vertices[k] = sub
-                    items[i]["DAT"]["vertices"] = vertices
+                for j in range( items[i]["DAT"]["animation count"] ):
+                    items[i]["DAT"].setdefault("animation", []).append( dict(zip(
+                          ["u1", "u2", "u3", "u4", "u5", "u6", "u7", ]
+                        , struct.unpack_from(
+                              "<7B"
+                            , v
+                            , offset
+                                + items[i]["DAT"]["animation offset"]
+                                - items[i]["DAT"]["base offset"]
+                                + ( j * 7 ) ))) )
 
-                    if items[i]["DAT"]["terrain"] != 0 and items[i]["DAT"]["scale"] == 0: # FIELD
-                        items[i]["pos"] = vertices[rows[0]["index"]][0]
+                if 'model' not in items[i]["DAT"]:
+                    continue
 
-                    for face in rows:
-                        subheader = {"type":struct.unpack("<H", v[index:index+2])[0]}
-                        index = index + 2
-                        subheader["count"] = struct.unpack("<H", v[index:index+2])[0]
-                        index = index + 2
-                        subheader["unknown2"] = struct.unpack("<4B", v[index:index+4])
-                        index = index + 4
-                        face["subheader"] = subheader
+                for model in items[i]["DAT"]["model"]:
+                    for j in range( model[ "mesh count" ] ):
+                        model.setdefault("mesh", []).append( dict(zip(
+                              [ "u1"
+                                , "u2"
+                                , "u3"
+                                , "vertex count"
+                                , "vertex offset"
+                                , "face count"
+                                , "face offset"
+                                , "u4"
+                                , "u5"
+                                , "u6"
+                                , "u7" ]
+                            , struct.unpack_from(
+                                  "<3BBHHH4B"
+                                , v
+                                , offset
+                                    + model[ "mesh offset" ]
+                                    - items[i]["DAT"]["base offset"]
+                                    + ( j * 14 ) ))) )
 
-                        if subheader["type"] == 0 and subheader["count"] > 0:
-                            subA = []
-                            for _ in range(subheader["count"]):
-                                subA.append( struct.unpack("<8B", v[index:index+8]) )
-                                index = index + 8
-                            face["subA"] = subA
+                def chain_siblings( siblings, parent ):
+                    return functools.reduce(
+                          lambda l, k: itertools.chain( *[ v.get(k, []) for v in l ] )
+                        , siblings
+                        , parent )
 
-                            colors = []
-                            for s in subA:
-                                colors.append( s[1] )
-                            face["colors"] = colors
+                vertex_set = {
+                    ( mesh["vertex count"], mesh["vertex offset"] )
+                    for mesh in chain_siblings( [ "mesh" ], items[i]["DAT"]["model"] ) }
 
-                            polygons = []
-                            for _ in range(subheader["count"]):
-                                nul = v.index(b'\xFF', index)
-                                polygons.append( struct.unpack("<"+str(nul-index)+"B", v[index:nul]) )
-                                index = nul + 1
-                            face["polygons"] = polygons
-                        elif subheader["type"] == 2:
-                            items[i]["sprite"] = subheader["count"]
+                vertex = {}
+                for vcount, voffset in vertex_set:
+                    vertex[ voffset ] = []
+                    for j in range( vcount ):
+                        vertex[ voffset ].append( struct.unpack_from(
+                              "<hhh"
+                            , v
+                            , offset
+                                + voffset
+                                - items[i]["DAT"]["base offset"]
+                                + ( j * 6 ) ) )
+
+                for mesh in chain_siblings( [ "mesh" ], items[i]["DAT"]["model"] ):
+                    if items[i]["DAT"]["terrain"] and not items[i]["DAT"]["scale"]: # FIELD
+                        mesh["pos"] = vertex[ mesh[ "vertex offset" ] ][0]
+
+                    for j in range( mesh[ "face count" ] ):
+                        mesh.setdefault("face", []).append( dict(zip(
+                              [ "type"
+                                , "edge count"
+                                , "edge offset"
+                                , "u1"
+                                , "u2" ]
+                            , struct.unpack_from(
+                                  "<HHH2B"
+                                , v
+                                , offset
+                                    + mesh[ "face offset" ]
+                                    - items[i]["DAT"]["base offset"]
+                                    + ( j * 8 ) ))) )
+
+                for face in chain_siblings( [ "mesh", "face" ], items[i]["DAT"]["model"] ):
+                    if face[ "type" ] == 0:
+                        for j in range( face[ "edge count" ] ):
+                            face.setdefault("edge", []).append( dict(zip(
+                                  [ "u1"
+                                    , "color1"
+                                    , "color2"
+                                    , "color3"
+                                    , "color4"
+                                    , "u2"
+                                    , "vertex offset" ]
+                                , struct.unpack_from(
+                                      "<B4BBH"
+                                    , v
+                                    , offset
+                                        + face[ "edge offset" ]
+                                        - items[i]["DAT"]["base offset"]
+                                        + ( j * 8 ) ))) )
+
+                        for edge in chain_siblings( [ "mesh", "face", "edge" ], items[i]["DAT"]["model"] ):
+                            nul = v.index( b'\xFF', offset + edge["vertex offset"] - items[i]["DAT"]["base offset"] )
+                            edge[ "vertex" ] = struct.unpack_from(
+                                  "<"+str( nul - ( offset + edge["vertex offset"] - items[i]["DAT"]["base offset"] ) )+"B"
+                                , v
+                                , offset
+                                    + edge["vertex offset"]
+                                    - items[i]["DAT"]["base offset"]
+                                    )
+
+                        # convert vertex indexes to vertices
+                        for mesh in chain_siblings( [ "mesh" ], items[i]["DAT"]["model"] ):
+                            for edge in chain_siblings( [ "edge" ], mesh[ "face" ] ):
+                                edge[ "vertex" ] = [
+                                    vertex[ mesh[ "vertex offset" ] ][p]
+                                    for p in edge[ "vertex" ] ]
+
+                    elif face[ "type" ] == 2:
+                        items[i]["DAT"]["sprite"] = face[ "edge count" ]
+
     return items
 
 def LoadTTM(TTM):
@@ -1014,26 +1094,19 @@ def ShowMovieTk(movie):
     tk.mainloop()
 
 def ShowModelPlt(model):
-    if "faces" in model["DAT"] and model["DAT"]["vertices"]:
-        ax = plt.figure().add_subplot(111, projection="3d")
-        edge = 0
-        for f in model["DAT"]["faces"]["rows"]:
-            if "polygons" in f:
-                for poly in f["polygons"]:
-                    face = []
-                    for p in poly:
-                        face.append(model["DAT"]["vertices"][f["index"]][p])
-                    face.append(face[0])
-                    x, z, y = list(zip(*face)) # convert model from y, z to z, y
-                    e = max([ abs(p) for a in [x, y, z] for p in a ])
-                    edge = e if e > edge else edge
-                    ax.plot(x, y, z, zdir='y')
-        ax.scatter( edge, edge, edge, zdir='y' )
-        ax.scatter( -edge, -edge, 0, zdir='y' )
-        plt.title(model["MAP"])
-        plt.xlabel("X")
-        plt.ylabel("Z")
-        plt.show()
+    ax = plt.figure().add_subplot(111, projection="3d")
+    span = 0
+    for mesh in model["DAT"]["model"][0]["mesh"]:
+        for edge in mesh["face"][0]["edge"]:
+            x, y, z = list(zip(*edge["vertex"] + [ edge["vertex"][0] ]))
+            span = max([ abs(p) for a in [x, y, z] for p in a ] + [ span ])
+            ax.plot(x, y, z)
+    ax.scatter( span, span, span )
+    ax.scatter( -span, -span, 0 )
+    plt.title(model["MAP"])
+    plt.xlabel("X")
+    plt.ylabel("Y")
+    plt.show()
 
 def MxV(M, V):
     x = round(M[0]*V[0] + M[1]*V[1] + M[2]*V[2] + M[3]*V[3])
@@ -1101,28 +1174,6 @@ def perspective(fovy, aspect, zNear, zFar):
 def EdgeFunction(a, b, c):
     return (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
 
-def triangulation(model):
-    model_space = []
-    if model["DAT"]["vertices"]:
-        for f in model["DAT"]["faces"]["rows"]:
-            if "polygons" in f:
-                for poly, c in list( zip(f["polygons"], f['colors'] ) ):
-                    v = [ model["DAT"]["vertices"][f["index"]][p] for p in poly ]
-                    # convert model from z up to y up
-                    v = [ MxV(R( (-90, 0, 0) ), (*p, 1))[0:3] for p in v]
-                    # convert model from clockwise to counter-clockwise
-                    v.reverse()
-                    if len(poly) >= 3:
-                        for w in range(1, len(poly)-1):
-                            model_space.append( ([v[i] for i in [0, w, w+1]], c) )
-                    elif len(poly) == 2:
-                        # give lines some volume
-                        model_space.append( ([ v[0], v[1], tuple([C+1 for C in v[1]]) ], c) )
-                        model_space.append( ([ v[0], tuple([B+1 for B in v[1]]), tuple([C+1 for C in v[0]]) ], c) )
-                    else:
-                        print("poly", len(poly), poly)
-    return model_space
-
 def raster(model_space, xpos, ypos, zpos, xrot, yrot):
     model_matrix = MxM(T( (xpos, ypos, zpos) ), R( (-xrot, yrot, 0) ))
     world_space = [ MxV(model_matrix, (*p, 1)) for p in model_space ]
@@ -1131,33 +1182,44 @@ def raster(model_space, xpos, ypos, zpos, xrot, yrot):
     projection_matrix = perspective(45, 320/200, 10, 50000)
     clip_space = [ MxV(projection_matrix, p) for p in camera_space ]
     ndc = [ (x/w, y/w, z/w, w/w) for (x, y, z, w) in clip_space if w != 0 and all(-b < p < b for p, b in zip((x, y, z), (w, w, w))) ]
-    screen = [((1 + x) * 0.5 * 320, (1 - y) * 0.5 * 200, z) for (x, y, z, w) in ndc]
+    screen = [((1 + x) * 0.5 * 320, (1 - y) * 0.5 * 200, -z) for (x, y, z, w) in ndc]
     return screen
 
+# Thanks to Scratchapixel for a crash-course in rendering
 def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
     backbuffer = PIL.Image.new("RGBA", (320, 200), (0x40, 0x40, 0x40))
 
     depth = {}
-    stpool = itertools.cycle([ [(1,0), (0,0), (0,1)], [(1,0), (0,1), (1,1)] ])
-    for poly, c in model_space:
+    for i, j, poly, c in model_space:
         V = raster(poly, xpos, ypos, zpos, xrot, yrot)
-        if len(V) == 3:
-            area = EdgeFunction(*V)
-            V = [(Vn[0], Vn[1], 1/Vn[2]) for Vn in V]
-            bbox = ( min([int(p[0]) for p in V])
-                   , min([int(p[1]) for p in V])
-                   , max([int(p[0]) for p in V])
-                   , max([int(p[1]) for p in V]) )
-            for p in [(px, py) for px in range(bbox[0], bbox[2]) for py in range(bbox[1], bbox[3])]:
-                w = [EdgeFunction(V[1], V[2], p), EdgeFunction(V[2], V[0], p), EdgeFunction(V[0], V[1], p)]
-                if all(wn >= 0 for wn in w):
-                    w = [wn / area for wn in w]
-                    z = 1 / sum([Vn[2] * wn for Vn, wn in zip(V, w)])
-                    if p not in depth or z < depth[p]:
-                        depth[p] = z
-                        color_offset = c * 3
-                        color = palette["PAL"]["VGA"][color_offset:color_offset+3]
-                        backbuffer.putpixel( p, tuple( color ) )
+
+        # Inverse Z
+        V = [(Vn[0], Vn[1], 1/Vn[2]) for Vn in V]
+
+        bbox = ( min([int(Vn[0]) for Vn in V])
+               , min([int(Vn[1]) for Vn in V])
+               , max([int(Vn[0]) for Vn in V])
+               , max([int(Vn[1]) for Vn in V]) )
+
+        for p in [(px, py) for px in range(bbox[0], bbox[2]) for py in range(bbox[1], bbox[3])]:
+            edge = list( zip( V[1:]+V[0:1], V ) )
+            λ = [ EdgeFunction(e[0], e[1], p) for e in edge ]
+            if all(λn >= 0 for λn in λ):
+                area = sum( λ )
+                λ = [ λn / area for λn in λ ]
+                z = 1 / sum( [ Vn[2] * λn for Vn, λn in zip( V, λ ) ] )
+
+                # they're in the prefered order so <= to get the last one listed
+                # sort of a blended painter's algorithm
+                # skipping depth testings mostly works except for the underside
+                # of the roof rows 10 and 13
+                #if z <= depth.get( p, float( 'inf' ) ):
+                if True:
+                    depth[p] = z
+                    color_offset = c * 3
+                    color = palette["PAL"]["VGA"][color_offset:color_offset+3]
+                    backbuffer.putpixel( p, tuple( color ) )
+
     surface.paste(backbuffer.convert("RGB").resize((surface.width(), surface.height())))
 
 def ShowModelTk(model):
@@ -1167,32 +1229,43 @@ def ShowModelTk(model):
     tk.geometry("{}x{}+{}+{}".format(320*scale, 200*scale,(1920-320*scale)//2,(1080-200*scale)//2))
     tk.resizable(False, False)
 
-    canvas = tkinter.Canvas(tk, width=320*scale, height=200*scale)
+    viewFrame = tkinter.Frame( tk )
+    viewFrame.pack( side=tkinter.LEFT, fill = tkinter.BOTH, expand = tkinter.YES)
+
+    canvas = tkinter.Canvas( viewFrame )
+    canvas['width'] = 320 * scale
+    canvas['height'] = 200 * scale
     canvas.pack(fill = tkinter.BOTH, expand = tkinter.YES)
 
-    surface = PIL.ImageTk.PhotoImage(PIL.Image.new("RGB", (320*scale, 200*scale)), master=canvas)
-    canvas.create_image(320*scale//2, 200*scale//2, image=surface)
+    surface = PIL.ImageTk.PhotoImage(PIL.Image.new("RGB", ( int( canvas['width'] ), int( canvas['height'] ) )), master=canvas)
+    canvas.create_image( int( canvas['width'] ) // 2, int( canvas['height'] ) // 2, image=surface )
 
-    hrscroll = tkinter.Scrollbar(canvas, orient=tkinter.HORIZONTAL)
+    hrscroll = tkinter.Scrollbar( canvas )
+    hrscroll['orient'] = tkinter.HORIZONTAL
     hrscroll.pack(side=tkinter.BOTTOM, fill=tkinter.X)
     hrscroll.set(0.45, 0.55)
 
-    hpscroll = tkinter.Scrollbar(canvas, orient=tkinter.HORIZONTAL)
+    hpscroll = tkinter.Scrollbar( canvas )
+    hpscroll['orient'] = tkinter.HORIZONTAL
     hpscroll.pack(side=tkinter.BOTTOM, fill=tkinter.X)
     hpscroll.set(0.45, 0.55)
 
-    vrscroll = tkinter.Scrollbar(canvas, orient=tkinter.VERTICAL)
+    vrscroll = tkinter.Scrollbar( canvas )
+    vrscroll['orient'] = tkinter.VERTICAL
     vrscroll.pack(side=tkinter.RIGHT, fill=tkinter.Y)
     vrscroll.set(0.0, 0.1)
 
-    zpscroll = tkinter.Scrollbar(canvas, orient=tkinter.VERTICAL)
+    zpscroll = tkinter.Scrollbar( canvas )
+    zpscroll['orient'] = tkinter.VERTICAL
     zpscroll.pack(side=tkinter.RIGHT, fill=tkinter.Y)
     zpscroll.set(0.9, 1.0)
 
-    vpscroll = tkinter.Scrollbar(canvas, orient=tkinter.VERTICAL)
+    vpscroll = tkinter.Scrollbar( canvas )
+    vpscroll['orient'] = tkinter.VERTICAL
     vpscroll.pack(side=tkinter.RIGHT, fill=tkinter.Y)
     vpscroll.set(0.45, 0.55)
 
+    model_space = []
     def setscroll(scroll, limit, degree):
         if limit >= 0:
             degree = max(0, min(limit, degree))
@@ -1230,15 +1303,66 @@ def ShowModelTk(model):
     zpscroll.config( command=lambda *args: view(zpscroll, -10000, *args) )
     vpscroll.config( command=lambda *args: view(vpscroll, -5000, *args) )
 
-    model_space = triangulation(model)
+    ctrlFrame = tkinter.Frame( tk )
+    ctrlFrame.pack(side=tkinter.RIGHT, fill=tkinter.Y)
 
-    yrot = hrscroll.get()[0] / 0.9 * 360
-    xpos = hpscroll.get()[0] / 0.9 * 5000 - 2500
-    xrot = vrscroll.get()[0] / 0.9 * -90
-    zpos = zpscroll.get()[0] / 0.9 * -10000
-    ypos = vpscroll.get()[0] / 0.9 * -5000 + 2500
+    toggle_var = {}
+    def toggleFaces():
+        nonlocal model_space
 
-    render(surface, model_space, xpos, ypos, zpos, xrot, yrot)
+        model_space = []
+        for i, mesh in enumerate( model["DAT"]["model"][0]["mesh"] ):
+            for j, edge in enumerate( mesh["face"][0]["edge"] ):
+                if toggle_var[ i ].get() and toggle_var[ ( i, j ) ].get():
+                    # convert model from z up to y up
+                    v = [ MxV(R( (-90, 0, 0) ), (*v, 1))[0:3] for v in edge["vertex"] ]
+                    model_space.append( ( i, j, v, edge["color1"] ) )
+
+        yrot = hrscroll.get()[0] / 0.9 * 360
+        xpos = hpscroll.get()[0] / 0.9 * 5000 - 2500
+        xrot = vrscroll.get()[0] / 0.9 * -90
+        zpos = zpscroll.get()[0] / 0.9 * -10000
+        ypos = vpscroll.get()[0] / 0.9 * -5000 + 2500
+        render(surface, model_space, xpos, ypos, zpos, xrot, yrot)
+
+    def onDouble( event ):
+        column = tree.identify_column( event.x )
+        if column == '#1':
+            iid = tree.identify_row( event.y )
+            tree.set( iid, column=column, value='YesNo'.replace( tree.set( iid, column=column ), '' ) )
+            parent = tree.parent( iid )
+            if parent == '':
+                toggle_var[ iid ].set( not toggle_var[ iid ].get() )
+            else:
+                toggle_var[ ( parent, iid ) ].set( not toggle_var[ ( parent, iid ) ].get() )
+            toggleFaces()
+
+    tree = tkinter.ttk.Treeview( ctrlFrame )
+    tree['columns'] = ('show','depth')
+    width = tkinter.font.Font().measure('Yes')
+    tree.column( 'show', width=width )
+    tree.column( 'depth', width=width )
+    tree.column( '#0', width=width*2 )
+    tree.bind( '<Double-1>', onDouble )
+    # prevent treeview from executing default binds
+    tree.bind( '<Double-1>', lambda e: 'break', '+' )
+    tree.pack( side=tkinter.LEFT, fill = tkinter.BOTH, expand = tkinter.YES )
+
+    sb = tkinter.Scrollbar( ctrlFrame )
+    sb['orient'] = tkinter.VERTICAL
+    sb['command'] = tree.yview
+    tree['yscrollcommand'] = sb.set
+    sb.pack( side=tkinter.RIGHT, fill=tkinter.Y )
+
+    for i, mesh in enumerate( model["DAT"]["model"][0]["mesh"] ):
+        parent = tree.insert( '', 'end', text=str( i ), values='Yes' )
+        toggle_var[ i ] = toggle_var[ parent ] = tkinter.BooleanVar( tree, value=True )
+        for j, _ in enumerate( mesh['face'][0]["edge"] ):
+            child = tree.insert( parent, 'end', text=str( j ), values='Yes' )
+            toggle_var[ ( i, j ) ] = toggle_var[ ( parent, child ) ] = tkinter.BooleanVar( tree, value=True )
+
+    # init
+    toggleFaces()
 
     tk.bind("q", lambda e: tk.quit())
     tk.mainloop()
@@ -1369,6 +1493,7 @@ if __name__ == "__main__":
             if name in resources:
                 tiles += LoadWLD(resources[name])
     table = LoadTBL(resources["Z"+zone+".TBL"])
+    #pprint.pprint( table )
 
     # DEBUG - Everything below here is temporary for debugging
 
@@ -1424,11 +1549,20 @@ if __name__ == "__main__":
         ShowWorldPlt(world, c, l, (669600, -1000, 1064800), (0, 180, 0))
 
     if False:
+        def get_model(model):
+            model_space = []
+            for mesh in model["DAT"]["model"][0]["mesh"]:
+                for edge in mesh["face"][0]["edge"]:
+                    # convert model from z up to y up
+                    v = [ MxV(R( (-90, 0, 0) ), (*v, 1))[0:3] for v in edge["vertex"] ]
+                    model_space.append( ( v, edge["color1"] ) )
+            return model_space
+
         world_space = []
         c = []
         for t in tiles:
             if "vertices" in table[t["type"]]["DAT"]:
-                model_space = triangulation(table[t["type"]])
+                model_space = get_model(table[t["type"]])
                 model_matrix = MxM(T( (t["xloc"], t["zloc"], t["yloc"], 1) ), R( (t["xrot"], t["zrot"], t["yrot"]) ))
                 model_matrix = MxM(model_matrix, S( (table[t["type"]]["DAT"]["scale"], table[t["type"]]["DAT"]["scale"], table[t["type"]]["DAT"]["scale"]) ))
                 world_space.extend( [ MxV(model_matrix, (*p, 1)) for (poly, text) in model_space for p in poly ] )
