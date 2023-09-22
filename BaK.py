@@ -1,9 +1,8 @@
-#!/bin/python
-
 import functools
 import itertools
 import math
 import pprint
+import statistics
 import struct
 import sys
 import time
@@ -765,7 +764,7 @@ def LoadTBL(TBL):
                                     , "color2"
                                     , "color3"
                                     , "color4"
-                                    , "u2"
+                                    , "group"
                                     , "vertex offset" ]
                                 , struct.unpack_from(
                                       "<B4BBH"
@@ -1108,6 +1107,11 @@ def ShowModelPlt(model):
     plt.ylabel("Y")
     plt.show()
 
+def VxV(A, B):
+    return ( A[1]*B[2] - A[2]*B[1]
+           , A[2]*B[0] - A[0]*B[2]
+           , A[0]*B[1] - A[1]*B[0] )
+
 def MxV(M, V):
     x = round(M[0]*V[0] + M[1]*V[1] + M[2]*V[2] + M[3]*V[3])
     y = round(M[4]*V[0] + M[5]*V[1] + M[6]*V[2] + M[7]*V[3])
@@ -1174,24 +1178,45 @@ def perspective(fovy, aspect, zNear, zFar):
 def EdgeFunction(a, b, c):
     return (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
 
-def raster(model_space, xpos, ypos, zpos, xrot, yrot):
-    model_matrix = MxM(T( (xpos, ypos, zpos) ), R( (-xrot, yrot, 0) ))
+def raster(model_space, xpos, ypos, zpos, xrot, zrot):
+    model_matrix = MxM(T( (xpos, ypos, zpos) ), R( (-xrot, 0, zrot) ))
     world_space = [ MxV(model_matrix, (*p, 1)) for p in model_space ]
     view_matrix = MxM(T( (0, 0, 0) ), R( (0, 0, 0) ))
     camera_space = [ MxV(view_matrix, p) for p in world_space ]
     projection_matrix = perspective(45, 320/200, 10, 50000)
     clip_space = [ MxV(projection_matrix, p) for p in camera_space ]
     ndc = [ (x/w, y/w, z/w, w/w) for (x, y, z, w) in clip_space if w != 0 and all(-b < p < b for p, b in zip((x, y, z), (w, w, w))) ]
-    screen = [((1 + x) * 0.5 * 320, (1 - y) * 0.5 * 200, -z) for (x, y, z, w) in ndc]
+    screen = [((1 + x) * 0.5 * 320, (1 - y) * 0.5 * 200, -z) for (x, y, _, w), (_, _, z, _) in zip( ndc, camera_space ) ]
     return screen
 
 # Thanks to Scratchapixel for a crash-course in rendering
-def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
+def render(surface, model_space, xpos, ypos, zpos, xrot, zrot):
     backbuffer = PIL.Image.new("RGBA", (320, 200), (0x40, 0x40, 0x40))
 
     depth = {}
-    for i, j, poly, c in model_space:
-        V = raster(poly, xpos, ypos, zpos, xrot, yrot)
+    plane = {}
+    for i, shape in enumerate( model_space ):
+        V = shape["vertex"]
+
+        # Normal vector to a Plane
+        # 𝑣⃑₁=𝑟⃑₁−𝑟⃑₀=(𝑥₁−𝑥₀,𝑦₁−𝑦₀,𝑧₁−𝑧₀)
+        # 𝑣⃑₂=𝑟⃑₂−𝑟⃑₀=(𝑥₂−𝑥₀,𝑦₂−𝑦₀,𝑧₂−𝑧₀)
+        # 𝑛⃑=𝑣⃑₁×𝑣⃑₂
+        𝑣1=[ 𝑟1n - 𝑟0n for 𝑟1n, 𝑟0n in zip( V[1], V[0] ) ]
+        𝑣2=[ 𝑟2n - 𝑟0n for 𝑟2n, 𝑟0n in zip( V[2], V[0] ) ]
+        𝑛 = VxV( 𝑣1, 𝑣2 )
+
+        # Equation of the Plane
+        # 𝑎(𝑥−𝑥₀)+𝑏(𝑦−𝑦₀)+𝑐(𝑧−𝑧₀)=0
+        # 𝑎𝑥+𝑏𝑦+𝑐𝑧−(𝑎𝑥+𝑏𝑦+𝑐𝑧)
+        # 𝑎𝑥+𝑏𝑦+𝑐𝑧+𝑑=0
+        equation = ( 𝑛[0], 𝑛[1], 𝑛[2], -( 𝑛[0]*V[0][0] + 𝑛[1]*V[0][1] + 𝑛[2]*V[0][2] ) )
+        reduce = math.gcd( *equation )
+        equation = tuple( n / reduce for n in equation )
+
+        # Group co-planar shapes together
+        plane.setdefault(equation, []).append( i )
+        V = raster(shape["vertex"], xpos, ypos, zpos, xrot, zrot)
 
         # Inverse Z
         V = [(Vn[0], Vn[1], 1/Vn[2]) for Vn in V]
@@ -1201,6 +1226,9 @@ def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
                , max([int(Vn[0]) for Vn in V])
                , max([int(Vn[1]) for Vn in V]) )
 
+        if bbox[0] >= 320 or bbox[2] < 0 or bbox[1] >= 200 or bbox[3] < 0:
+            continue
+
         for p in [(px, py) for px in range(bbox[0], bbox[2]) for py in range(bbox[1], bbox[3])]:
             edge = list( zip( V[1:]+V[0:1], V ) )
             λ = [ EdgeFunction(e[0], e[1], p) for e in edge ]
@@ -1209,14 +1237,30 @@ def render(surface, model_space, xpos, ypos, zpos, xrot, yrot):
                 λ = [ λn / area for λn in λ ]
                 z = 1 / sum( [ Vn[2] * λn for Vn, λn in zip( V, λ ) ] )
 
-                # they're in the prefered order so <= to get the last one listed
-                # sort of a blended painter's algorithm
-                # skipping depth testings mostly works except for the underside
-                # of the roof rows 10 and 13
-                #if z <= depth.get( p, float( 'inf' ) ):
-                if True:
-                    depth[p] = z
-                    color_offset = c * 3
+                # Track the depth per plane
+                if z < depth.get( equation, float( 'inf' ) ):
+                    depth[ equation ] = z
+
+    # Sort planes by depth
+    order = [ item[0] for item in sorted( depth.items(), key=lambda item: -item[1] ) ]
+
+    # Painter's Algorithm
+    # Draw each plane furthest to closest
+    for equation in order:
+        for i in plane[ equation ]:
+            shape = model_space[i]
+            V = raster(shape["vertex"], xpos, ypos, zpos, xrot, zrot)
+
+            bbox = ( min([int(Vn[0]) for Vn in V])
+                   , min([int(Vn[1]) for Vn in V])
+                   , max([int(Vn[0]) for Vn in V])
+                   , max([int(Vn[1]) for Vn in V]) )
+
+            for p in [(px, py) for px in range(bbox[0], bbox[2]) for py in range(bbox[1], bbox[3])]:
+                edge = list( zip( V[1:]+V[0:1], V ) )
+                λ = [ EdgeFunction(e[0], e[1], p) for e in edge ]
+                if all(λn >= 0 for λn in λ):
+                    color_offset = shape["color1"] * 3
                     color = palette["PAL"]["VGA"][color_offset:color_offset+3]
                     backbuffer.putpixel( p, tuple( color ) )
 
@@ -1226,24 +1270,24 @@ def ShowModelTk(model):
     scale = 3
 
     tk = tkinter.Tk()
-    tk.geometry("{}x{}+{}+{}".format(320*scale, 200*scale,(1920-320*scale)//2,(1080-200*scale)//2))
-    tk.resizable(False, False)
 
     viewFrame = tkinter.Frame( tk )
-    viewFrame.pack( side=tkinter.LEFT, fill = tkinter.BOTH, expand = tkinter.YES)
+    viewFrame.pack( side=tkinter.LEFT )
+    viewFrame.grid_columnconfigure( 0, minsize = 160 * scale )
+    viewFrame.grid_rowconfigure( 0, minsize = 200 * scale )
 
     canvas = tkinter.Canvas( viewFrame )
     canvas['width'] = 320 * scale
     canvas['height'] = 200 * scale
-    canvas.pack(fill = tkinter.BOTH, expand = tkinter.YES)
+    canvas.grid( row = 0, column = 0, sticky = 'nsew' )
 
     surface = PIL.ImageTk.PhotoImage(PIL.Image.new("RGB", ( int( canvas['width'] ), int( canvas['height'] ) )), master=canvas)
-    canvas.create_image( int( canvas['width'] ) // 2, int( canvas['height'] ) // 2, image=surface )
+    canvas.create_image( int(-160 * scale) // 2, 0, anchor=tkinter.NW, image=surface )
 
     hrscroll = tkinter.Scrollbar( canvas )
     hrscroll['orient'] = tkinter.HORIZONTAL
     hrscroll.pack(side=tkinter.BOTTOM, fill=tkinter.X)
-    hrscroll.set(0.45, 0.55)
+    hrscroll.set(0.0, 0.10)
 
     hpscroll = tkinter.Scrollbar( canvas )
     hpscroll['orient'] = tkinter.HORIZONTAL
@@ -1253,7 +1297,7 @@ def ShowModelTk(model):
     vrscroll = tkinter.Scrollbar( canvas )
     vrscroll['orient'] = tkinter.VERTICAL
     vrscroll.pack(side=tkinter.RIGHT, fill=tkinter.Y)
-    vrscroll.set(0.0, 0.1)
+    vrscroll.set(0.20, 0.30)
 
     zpscroll = tkinter.Scrollbar( canvas )
     zpscroll['orient'] = tkinter.VERTICAL
@@ -1275,12 +1319,12 @@ def ShowModelTk(model):
         start = float(degree) / limit * 0.9 
         scroll.set(start, start + 0.1)
 
-        yrot = hrscroll.get()[0] / 0.9 * 360
+        zrot = hrscroll.get()[0] / 0.9 * 360
         xpos = hpscroll.get()[0] / 0.9 * 5000 - 2500
-        xrot = vrscroll.get()[0] / 0.9 * -90
+        xrot = vrscroll.get()[0] / 0.9 * 360
         zpos = zpscroll.get()[0] / 0.9 * -10000
         ypos = vpscroll.get()[0] / 0.9 * -5000 + 2500
-        render(surface, model_space, xpos, ypos, zpos, xrot, yrot)
+        render(surface, model_space, xpos, ypos, zpos, xrot, zrot)
 
     def view(scroll, limit, event, value, unit=None):
         if event == "moveto":
@@ -1299,12 +1343,12 @@ def ShowModelTk(model):
 
     hrscroll.config( command=lambda *args: view(hrscroll, 360, *args) )
     hpscroll.config( command=lambda *args: view(hpscroll, 5000, *args) )
-    vrscroll.config( command=lambda *args: view(vrscroll, -90, *args) )
+    vrscroll.config( command=lambda *args: view(vrscroll, 360, *args) )
     zpscroll.config( command=lambda *args: view(zpscroll, -10000, *args) )
     vpscroll.config( command=lambda *args: view(vpscroll, -5000, *args) )
 
     ctrlFrame = tkinter.Frame( tk )
-    ctrlFrame.pack(side=tkinter.RIGHT, fill=tkinter.Y)
+    ctrlFrame.pack(side=tkinter.LEFT, fill=tkinter.Y)
 
     toggle_var = {}
     def toggleFaces():
@@ -1314,16 +1358,14 @@ def ShowModelTk(model):
         for i, mesh in enumerate( model["DAT"]["model"][0]["mesh"] ):
             for j, edge in enumerate( mesh["face"][0]["edge"] ):
                 if toggle_var[ i ].get() and toggle_var[ ( i, j ) ].get():
-                    # convert model from z up to y up
-                    v = [ MxV(R( (-90, 0, 0) ), (*v, 1))[0:3] for v in edge["vertex"] ]
-                    model_space.append( ( i, j, v, edge["color1"] ) )
+                    model_space.append( edge )
 
-        yrot = hrscroll.get()[0] / 0.9 * 360
+        zrot = hrscroll.get()[0] / 0.9 * 360
         xpos = hpscroll.get()[0] / 0.9 * 5000 - 2500
-        xrot = vrscroll.get()[0] / 0.9 * -90
+        xrot = vrscroll.get()[0] / 0.9 * 360
         zpos = zpscroll.get()[0] / 0.9 * -10000
         ypos = vpscroll.get()[0] / 0.9 * -5000 + 2500
-        render(surface, model_space, xpos, ypos, zpos, xrot, yrot)
+        render(surface, model_space, xpos, ypos, zpos, xrot, zrot)
 
     def onDouble( event ):
         column = tree.identify_column( event.x )
@@ -1361,8 +1403,22 @@ def ShowModelTk(model):
             child = tree.insert( parent, 'end', text=str( j ), values='Yes' )
             toggle_var[ ( i, j ) ] = toggle_var[ ( parent, child ) ] = tkinter.BooleanVar( tree, value=True )
 
+    logFrame = tkinter.Frame( tk )
+    logFrame.pack(side=tkinter.LEFT, fill=tkinter.Y)
+    t = tkinter.Text( logFrame, width=25 )
+    t.pack()
+
     # init
+#    for iid in range(0,15):
+#        #tree.set( iid, column='#1', value='YesNo'.replace( tree.set( iid, column='#1' ), '' ) )
+#        toggle_var[ iid ].set( not toggle_var[ iid ].get() )
+#    for iid in [9,13]:
+#        #tree.set( iid, column='#1', value='YesNo'.replace( tree.set( iid, column='#1' ), '' ) )
+#        toggle_var[ iid ].set( not toggle_var[ iid ].get() )
     toggleFaces()
+
+    def dump(mod):
+        t.delete( '1.0', tkinter.END )
 
     tk.bind("q", lambda e: tk.quit())
     tk.mainloop()
